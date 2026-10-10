@@ -1,0 +1,66 @@
+name: Shrink audio on R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: 'Chỉ một truyện (slug). Để trống = tất cả truyện'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Chạy thử: chuyển và kiểm tra nhưng KHÔNG ghi lên R2'
+        type: boolean
+        default: true
+      parts:
+        description: 'Số máy chạy song song (1-20)'
+        required: false
+        default: '20'
+
+permissions:
+  contents: read
+
+concurrency: shrink-audio
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      parts: ${{ steps.p.outputs.parts }}
+      matrix: ${{ steps.p.outputs.matrix }}
+    steps:
+      - id: p
+        env:
+          PARTS: ${{ inputs.parts }}
+        run: |
+          n=$(python3 -c "import os; print(max(1, min(20, int(os.environ.get('PARTS') or 1))))")
+          echo "parts=$n" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(python3 -c "import json; print(json.dumps(list(range($n))))")" >> "$GITHUB_OUTPUT"
+
+  shrink:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        part: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg and boto3
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg > /dev/null
+          pip install -q boto3
+      - name: Shrink
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SLUG: ${{ inputs.slug }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PART: ${{ matrix.part }}
+          PARTS: ${{ needs.plan.outputs.parts }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then FLAG=--dry-run; else FLAG=; fi
+          python3 shrink_r2.py --part "$PART" --parts "$PARTS" $FLAG
